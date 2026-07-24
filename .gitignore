@@ -1,0 +1,14 @@
+# 빌드 산출물
+build/
+gen/
+
+# 키스토어 (개인키)
+*.keystore
+*.jks
+
+# 실제 시크릿 값 (예시 파일만 커밋)
+res/values/secrets.xml
+
+# APK 및 서명 파일
+*.apk
+*.idsig
