@@ -1,16 +1,24 @@
 package com.hongcha.tesla;
 
 import android.app.Activity;
+import android.app.DownloadManager;
+import android.content.Context;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.KeyEvent;
+import android.webkit.CookieManager;
+import android.webkit.DownloadListener;
+import android.webkit.URLUtil;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
 import android.graphics.Color;
 
 public class MainActivity extends Activity {
@@ -61,6 +69,34 @@ public class MainActivity extends Activity {
             }
         });
         web.setWebChromeClient(new WebChromeClient());
+
+        // APK 등 파일 다운로드 처리 (WebView 기본 동작 없음 → DownloadManager 위임)
+        web.setDownloadListener(new DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent, String contentDisposition,
+                                        String mimeType, long contentLength) {
+                try {
+                    String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+                    DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+                    req.setMimeType(mimeType);
+                    req.addRequestHeader("User-Agent", userAgent);
+                    req.setNotificationVisibility(
+                            DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                    req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+                    req.setAllowedOverMetered(true);
+                    req.setAllowedOverRoaming(true);
+                    DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+                    if (dm != null) {
+                        dm.enqueue(req);
+                        Toast.makeText(MainActivity.this,
+                                fileName + " 다운로드 시작 (알림 확인)", Toast.LENGTH_LONG).show();
+                    }
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, "다운로드 실패: " + e.getMessage(),
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+        });
 
         setContentView(web);
 
