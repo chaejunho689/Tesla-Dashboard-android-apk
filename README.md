@@ -5,7 +5,7 @@ Tesla Fleet API 기반 자체 호스팅 브릿지 서버에 연결하는 안드�
 ---
 
 <!-- 첫 번째 스크린샷: 대시보드 상단 ~ 지도 영역 -->
-![Dashboard Overview](screenshots/screenshot_overview.png)
+![Dashboard Overview](screenshots/screenshot_overview.jpg)
 
 ### 대시보드 · 지도
 
@@ -17,7 +17,7 @@ Tesla Fleet API 기반 자체 호스팅 브릿지 서버에 연결하는 안드�
 ---
 
 <!-- 두 번째 스크린샷: 제어 버튼 영역 -->
-![Control Panel](screenshots/screenshot_control.png)
+![Control Panel](screenshots/screenshot_control.jpg)
 
 ### 제어
 
