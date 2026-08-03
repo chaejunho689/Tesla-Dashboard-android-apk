@@ -1,13 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.hongcha.tesla"
-    android:versionCode="7"
-    android:versionName="1.6">
+    android:versionCode="29"
+    android:versionName="3.8">
 
-    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34"/>
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36"/>
 
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- 알림 (Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 상태 칩(Live Update, Android 16) 승격 권한 -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS"/>
+    <!-- 백그라운드 폴링용 포어그라운드 서비스 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
         android:label="테슬라 모델3"
@@ -15,7 +23,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.NoTitleBar">
+        android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -28,5 +36,21 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- 백그라운드 상태 폴러 (알림·나우바 유지) -->
+        <service
+            android:name=".TeslaWatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"/>
+
+        <!-- 알림 테스트용 (adb broadcast) -->
+        <receiver android:name=".TestReceiver" android:exported="true"/>
+
+        <!-- 부팅 시 서비스 자동 시작 -->
+        <receiver android:name=".BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

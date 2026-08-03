@@ -9,6 +9,9 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.KeyEvent;
+import android.view.View;
+import android.view.WindowInsets;
+import android.graphics.Insets;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.URLUtil;
@@ -41,6 +44,14 @@ public class MainActivity extends Activity {
 
         HOST = getString(R.string.bridge_base).replaceFirst("https?://", "");
         URL  = getString(R.string.bridge_base) + "/?key=" + getString(R.string.bridge_key);
+
+        // Android 13+ 알림 권한 요청, 그리고 백그라운드 상태 감시 서비스 시작
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 42);
+        }
+        TeslaWatchService.start(this);
 
         web = new WebView(this);
         web.setBackgroundColor(Color.parseColor("#0e0f11"));

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 15(API35) 강제 edge-to-edge 해제 → 콘텐츠가 상태바 아래에 배치 -->
+    <style name="AppTheme" parent="@android:style/Theme.NoTitleBar">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+        <item name="android:statusBarColor">#0e0f11</item>
+        <item name="android:navigationBarColor">#0e0f11</item>
+    </style>
+</resources>
