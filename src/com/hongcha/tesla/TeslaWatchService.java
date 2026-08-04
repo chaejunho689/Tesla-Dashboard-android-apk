@@ -40,12 +40,11 @@ public class TeslaWatchService extends Service {
     static final String CH_ONGOING   = "tesla_ongoing";      // 상태 칩(라이브)
     static final String CH_KEEPALIVE = "tesla_keepalive";    // 포어그라운드 유지용(최소)
     static final String CH_EVENT     = "tesla_event";        // 이벤트성 알림
-    static final int NID_ONGOING = 1;   // 포어그라운드 keepalive
-    static final int NID_LIVE    = 2;   // 상태 칩(승격 대상)
+    static final int NID_ONGOING = 1;   // 포어그라운드 keepalive (승격 안 함)
+    static final int NID_LIVE    = 2;   // 상태 칩(승격 대상) — 상태 없으면 cancel
     static final int NID_SW      = 100;
-    static final int NID_TRUNK   = 101;
-    static final int NID_FRUNK   = 102;
     static final int NID_CHG_DONE = 103;
+    static final int NID_DRIVE_END = 104;
 
     // 상태 저장 (중복 알림 방지)
     private static final String PREFS = "tesla_state";
@@ -53,6 +52,7 @@ public class TeslaWatchService extends Service {
 
     private ScheduledExecutorService scheduler;
     private ScheduledExecutorService pendingScheduler;
+    private ScheduledExecutorService chipScheduler;
     private String base = "", key = "";
 
     @Override public void onCreate() {
@@ -61,8 +61,9 @@ public class TeslaWatchService extends Service {
         base = getString(R.string.bridge_base);
         key  = getString(R.string.bridge_key);
         createChannels();
-        // 라이브(승격) 알림 = 포어그라운드 알림 (colorized는 fg에서만 적용됨)
-        startForeground(NID_ONGOING, buildIdleNotification());
+        // 포어그라운드 유지용 최소 알림. 상태 칩은 별도 알림(NID_LIVE)으로 분리한다.
+        // (분리 이유: 상태가 없어질 때 칩 알림을 cancel 해야 나중에 다시 확실히 재등록된다)
+        startForeground(NID_ONGOING, buildKeepalive());
         scheduler = Executors.newSingleThreadScheduledExecutor();
         // 자체 스케줄링: 주행 중엔 30초, 아니면 120초
         scheduler.schedule(new Runnable() {
@@ -79,6 +80,12 @@ public class TeslaWatchService extends Service {
         pendingScheduler.scheduleWithFixedDelay(new Runnable() {
             @Override public void run() { checkPending(); }
         }, 5, 10, TimeUnit.SECONDS);
+
+        // 칩의 HH:MM 갱신용 — 네트워크 없이 로컬 시각만으로 1분마다 다시 그린다.
+        chipScheduler = Executors.newSingleThreadScheduledExecutor();
+        chipScheduler.scheduleWithFixedDelay(new Runnable() {
+            @Override public void run() { refreshChip(); }
+        }, 60, 60, TimeUnit.SECONDS);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -86,34 +93,37 @@ public class TeslaWatchService extends Service {
         return START_STICKY;
     }
 
-    /** 테스트: 샘플 데이터로 각 알림 발생 */
+    /** 테스트: 샘플 데이터로 각 알림/칩 발생 (adb broadcast → TestReceiver) */
     private void fireTest(String w) {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm == null || w == null) return;
         long t = System.currentTimeMillis();
         switch (w) {
-            case "sw":     notifyEvent(NID_SW, "신규 소프트웨어", "2024.44.25 다운로드 가능", android.R.drawable.stat_sys_download); break;
-            case "trunk":  notifyEvent(NID_TRUNK, "트렁크 열림", "트렁크가 열려 있습니다", R.drawable.ic_stat_trunk); break;
-            case "frunk":  notifyEvent(NID_FRUNK, "프렁크 열림", "프렁크가 열려 있습니다", R.drawable.ic_stat_frunk); break;
-            case "chgdone":notifyEvent(NID_CHG_DONE, "충전 완료 되었습니다",
+            case "sw":      notifyEvent(NID_SW, "신규 소프트웨어", "2024.44.25 다운로드 가능",
+                                android.R.drawable.stat_sys_download); break;
+            case "chgdone": notifyEvent(NID_CHG_DONE, "충전 완료 되었습니다",
                                 "걸린 시간 3시간 15분 · 32.4kWh · 9,169원", R.drawable.ic_stat_charge); break;
-            case "drive":  nm.notify(NID_ONGOING, buildLive("테슬라", "운전 중",
-                                R.drawable.ic_stat_drive, t, false, "운전 중")); break;
-            case "charge": nm.notify(NID_ONGOING, buildLive("테슬라 충전", "완충까지",
-                                R.drawable.ic_stat_charge, t + 45 * 60000L, true, "충전 중")); break;
-            case "hvac":   nm.notify(NID_ONGOING, buildLive("테슬라 공조", "에어컨 가동 중",
-                                R.drawable.ic_stat_snow, 0, false, "에어컨 가동")); break;
-            case "hvacdone":nm.notify(NID_ONGOING, buildLive("테슬라 공조", "에어컨 완료",
-                                R.drawable.ic_stat_snow, 0, false, "에어컨 완료")); break;
-            case "sentry": nm.notify(NID_ONGOING, buildLive("테슬라", "센트리모드 켜짐",
-                                R.drawable.ic_stat_sentry, 0, false, "센트리")); break;
-            case "park":   nm.notify(NID_ONGOING, buildIdleNotification()); break;
+            case "driveend":notifyEvent(NID_DRIVE_END, "주행 종료", "주행 시간 42분",
+                                R.drawable.ic_stat_park); break;
+            // 상태 칩 — 실제 상태 진입과 같은 경로(applyLive)를 타게 한다
+            case "drive":   driveStart = t - 170 * 60_000L; applyLive(LIVE_DRIVE); break;   // 02:50 경과
+            case "charge":  chargeEta  = t + 45 * 60_000L;  applyLive(LIVE_CHARGE); break;  // 00:45 남음
+            case "hvac":    hvacStart  = t - 50 * 60_000L;
+                            hvacText   = "에어컨 가동 중";  applyLive(LIVE_HVAC); break;     // 00:50 경과
+            case "trunk":   applyLive(LIVE_TRUNK); break;
+            case "frunk":   applyLive(LIVE_FRUNK); break;
+            case "sentry":  applyLive(LIVE_SENTRY); break;
+            case "off":     applyLive(LIVE_NONE); break;
         }
     }
     @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onDestroy() {
         if (scheduler != null) scheduler.shutdownNow();
         if (pendingScheduler != null) pendingScheduler.shutdownNow();
+        if (chipScheduler != null) chipScheduler.shutdownNow();
+        // 칩 알림은 포어그라운드 알림이 아니라 서비스가 죽어도 남는다 → 직접 정리
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm != null) nm.cancel(NID_LIVE);
         super.onDestroy();
     }
 
@@ -167,13 +177,15 @@ public class TeslaWatchService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 
-    /** 주차 상태도 상태 칩으로 (승격형) */
-    private Notification buildIdleNotification() {
-        return buildLive("테슬라", "주차 됨", R.drawable.ic_stat_park, 0, false, "주차");
-    }
-
-    /** 라이브 업데이트(상태 칩) 알림 — Android 16(API36) setShortCriticalText + chronometer
-     *  chip: 상태바 칩에 표시할 짧은 텍스트(시간·정보). chronoBase>0이면 타이머. */
+    /** 라이브 업데이트(나우바) 알림 — Android 16(API36) 승격 요청 + 짧은 상태 텍스트
+     *  chip: 상태바 칩에 표시할 짧은 텍스트(시간·정보). chronoBase>0이면 타이머.
+     *
+     *  ※ 승격(FLAG_PROMOTED_ONGOING) 필수 조건 — 하나라도 어기면 나우바에 안 뜬다:
+     *    - setOngoing(true), contentTitle 있음, 커스텀 RemoteViews 없음, 그룹 요약 아님
+     *    - 채널 importance != IMPORTANCE_MIN
+     *    - extras에 "android.requestPromotedOngoing" = true
+     *    - 매니페스트에 POST_PROMOTED_NOTIFICATIONS
+     *    - setColorized(true) 를 쓰면 안 됨  ← 예전 구현이 여기서 걸려 승격이 거부됐음 */
     private Notification buildLive(String title, String text, int icon,
                                    long chronoBase, boolean countDown, String chip) {
         Notification.Builder b = new Notification.Builder(this, CH_ONGOING)
@@ -183,8 +195,7 @@ public class TeslaWatchService extends Service {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setContentIntent(openAppIntent())
-                .setColor(Color.parseColor("#e82127"))
-                .setColorized(true);
+                .setColor(Color.parseColor("#e82127"));
         if (chronoBase > 0) {
             b.setUsesChronometer(true).setWhen(chronoBase).setShowWhen(true);
             if (Build.VERSION.SDK_INT >= 24) b.setChronometerCountDown(countDown);
@@ -197,10 +208,10 @@ public class TeslaWatchService extends Service {
             android.os.Bundle ex = new android.os.Bundle();
             ex.putBoolean("android.requestPromotedOngoing", true);
             b.addExtras(ex);
-            Notification n0 = b.build();
-            boolean p = false;
-            try { p = n0.hasPromotableCharacteristics(); } catch (Exception ignore) {}
-            b.setContentText(text + "  [승격:" + (p ? "O" : "X") + "]");
+            Notification n = b.build();
+            try { Log.d(TAG, "promotable=" + n.hasPromotableCharacteristics() + " (" + text + ")"); }
+            catch (Throwable ignore) {}
+            return n;
         }
         return b.build();
     }
@@ -215,10 +226,85 @@ public class TeslaWatchService extends Service {
         b.setStyle(ps);
     }
 
-    // 상태 카테고리
-    private static final int LIVE_IDLE = 0, LIVE_SENTRY = 1, LIVE_HVAC = 2, LIVE_CHARGE = 3, LIVE_DRIVE = 4;
-    private int curLive = -1;
-    private long chronoBase = 0;   // 진행 중 상태의 시작 시각(elapsedRealtime)
+    // 상태 칩 카테고리. 숫자가 클수록 우선순위가 높다(동시 발생 시 하나만 표시).
+    private static final int LIVE_NONE  = 0,
+                             LIVE_SENTRY = 1,
+                             LIVE_HVAC   = 2,
+                             LIVE_FRUNK  = 3,
+                             LIVE_TRUNK  = 4,
+                             LIVE_CHARGE = 5,
+                             LIVE_DRIVE  = 6;
+
+    // 폴링 스레드와 칩 갱신 스레드가 함께 읽으므로 volatile
+    private volatile int curLive = LIVE_NONE;
+    private volatile long driveStart = 0;   // 주행 시작 시각(ms)
+    private volatile long hvacStart  = 0;   // 공조 가동 시작 시각(ms)
+    private volatile long chargeEta  = 0;   // 완충 예상 시각(ms). 0이면 미상
+    private volatile String hvacText = "에어컨 가동 중";
+    private boolean wasDriving = false;
+
+    /** 경과/남은 밀리초 → "HH:MM" (칩에 들어갈 짧은 형식) */
+    private static String hhmm(long ms) {
+        if (ms < 0) ms = 0;
+        long totalMin = ms / 60_000L;
+        long h = totalMin / 60, m = totalMin % 60;
+        if (h > 99) { h = 99; m = 59; }
+        return String.format(java.util.Locale.US, "%02d:%02d", h, m);
+    }
+
+    /** 시간이 들어가는 칩(운전·충전·에어컨)을 1분마다 다시 그린다. 네트워크 호출 없음. */
+    private void refreshChip() {
+        int s = curLive;
+        if (s != LIVE_DRIVE && s != LIVE_CHARGE && s != LIVE_HVAC) return;
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        Notification n = buildForState(s);
+        if (n != null) nm.notify(NID_LIVE, n);
+    }
+
+    /** 상태별 라이브 알림 생성. 칩 텍스트는 7자 이내로 유지할 것(초과 시 잘린다). */
+    private Notification buildForState(int state) {
+        long now = System.currentTimeMillis();
+        switch (state) {
+            case LIVE_DRIVE:
+                return buildLive("테슬라", "운전 중", R.drawable.ic_stat_drive,
+                        driveStart, false, hhmm(now - driveStart));
+            case LIVE_CHARGE: {
+                boolean eta = chargeEta > now;
+                return buildLive("테슬라 충전",
+                        eta ? "완충까지 " + hhmm(chargeEta - now) : "충전 중",
+                        R.drawable.ic_stat_charge,
+                        eta ? chargeEta : 0, true,
+                        eta ? hhmm(chargeEta - now) : "충전중");
+            }
+            case LIVE_TRUNK:
+                return buildLive("테슬라", "트렁크 열림", R.drawable.ic_stat_trunk, 0, false, "트렁크");
+            case LIVE_FRUNK:
+                return buildLive("테슬라", "프렁크 열림", R.drawable.ic_stat_frunk, 0, false, "프렁크");
+            case LIVE_HVAC:
+                return buildLive("테슬라 공조", hvacText, R.drawable.ic_stat_snow,
+                        hvacStart, false, hhmm(now - hvacStart));
+            case LIVE_SENTRY:
+                return buildLive("테슬라", "센트리 모드", R.drawable.ic_stat_sentry, 0, false, "감시중");
+            default:
+                return null;
+        }
+    }
+
+    /** 상태 칩 반영. LIVE_NONE이면 칩 알림 자체를 없앤다. */
+    private void applyLive(int state) {
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        if (state == LIVE_NONE) {
+            if (curLive != LIVE_NONE) nm.cancel(NID_LIVE);
+            curLive = LIVE_NONE;
+            return;
+        }
+        Notification n = buildForState(state);
+        if (n == null) return;
+        curLive = state;
+        nm.notify(NID_LIVE, n);
+    }
 
     // ── 폴링 ──
     private void pollOnce() {
@@ -232,10 +318,7 @@ public class TeslaWatchService extends Service {
             JSONObject cl = resp.optJSONObject("climate_state");
             JSONObject ds = resp.optJSONObject("drive_state");
 
-            if (vs != null) {
-                handleSoftwareUpdate(vs);
-                handleTrunkFrunk(vs);
-            }
+            if (vs != null) handleSoftwareUpdate(vs);
             handleChargeComplete(cs, j);
             updateLiveNotification(cs, cl, ds, vs);
         } catch (Exception e) {
@@ -244,8 +327,7 @@ public class TeslaWatchService extends Service {
     }
 
     private void updateLiveNotification(JSONObject cs, JSONObject cl, JSONObject ds, JSONObject vs) {
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm == null) return;
+        long now = System.currentTimeMillis();
 
         // 주행 판정: shift_state = D/R/N 이거나 속도>0 이거나 파워!=0
         boolean driving = false;
@@ -258,56 +340,51 @@ public class TeslaWatchService extends Service {
             else if (Math.abs(power) > 1) driving = true;   // 회생/추진 중
         }
 
-        // 충전 중?
         boolean charging = cs != null && "Charging".equals(cs.optString("charging_state", ""));
         int minLeft = cs != null ? cs.optInt("minutes_to_full_charge", 0) : 0;
 
-        // 공조 상태
         boolean climateOn = cl != null && cl.optBoolean("is_climate_on", false);
         double inside = cl != null ? cl.optDouble("inside_temp", -999) : -999;
         double target = cl != null ? cl.optDouble("driver_temp_setting", -999) : -999;
         boolean climateReached = climateOn && inside > -900 && target > -900
                 && Math.abs(inside - target) <= 1.0;
 
-        // 센트리
-        boolean sentry = vs != null && vs.optBoolean("sentry_mode", false);
+        boolean trunkOpen = vs != null && vs.optInt("rt", 0) != 0;
+        boolean frunkOpen = vs != null && vs.optInt("ft", 0) != 0;
+        boolean sentry    = vs != null && vs.optBoolean("sentry_mode", false);
 
-        Notification n;
-        int nextLive;
+        // 시작 시각 갱신 (상태에 새로 진입한 순간만)
+        if (driving && !wasDriving) driveStart = now;
+        if (climateOn) { if (hvacStart == 0) hvacStart = now; } else hvacStart = 0;
+        chargeEta = (charging && minLeft > 0) ? now + minLeft * 60_000L : 0;
+        hvacText  = climateReached ? "에어컨 완료" : "에어컨 가동 중";
 
-        // 우선순위: 주행 > 충전 > (주차중) 공조 > 센트리 > 대기
-        if (driving) {
-            nextLive = LIVE_DRIVE;
-            if (curLive != LIVE_DRIVE) chronoBase = System.currentTimeMillis();
-            n = buildLive("테슬라", "운전 중", R.drawable.ic_stat_drive,
-                    chronoBase, false, "운전 중");
-        } else if (charging) {
-            nextLive = LIVE_CHARGE;
-            long base = 0;
-            String text;
-            if (minLeft > 0) {
-                base = System.currentTimeMillis() + minLeft * 60_000L;
-                text = "완충까지";
-            } else {
-                text = "충전 중";
-            }
-            n = buildLive("테슬라 충전", text, R.drawable.ic_stat_charge,
-                    base, true, "충전 중");
-        } else if (climateOn) {
-            nextLive = LIVE_HVAC;
-            String text = climateReached ? "에어컨 완료" : "에어컨 가동 중";
-            n = buildLive("테슬라 공조", text, R.drawable.ic_stat_snow,
-                    0, false, text);
-        } else if (sentry) {
-            nextLive = LIVE_SENTRY;
-            n = buildLive("테슬라", "센트리모드 켜짐", R.drawable.ic_stat_sentry, 0, false, "센트리");
-        } else {
-            nextLive = LIVE_IDLE;
-            n = buildIdleNotification();
+        // 주행 종료 → 칩은 내려가고 일반 알림 1회
+        if (wasDriving && !driving) {
+            long ms = driveStart > 0 ? (now - driveStart) : 0;
+            notifyEvent(NID_DRIVE_END, "주행 종료",
+                    ms > 0 ? ("주행 시간 " + durKo(ms)) : "주행이 종료되었습니다",
+                    R.drawable.ic_stat_park);
         }
+        wasDriving = driving;
 
-        curLive = nextLive;
-        nm.notify(NID_ONGOING, n);
+        // 우선순위: 운전 > 충전 > 트렁크 > 프렁크 > 에어컨 > 감시. 해당 없으면 칩 없음.
+        int next = LIVE_NONE;
+        if (driving)         next = LIVE_DRIVE;
+        else if (charging)   next = LIVE_CHARGE;
+        else if (trunkOpen)  next = LIVE_TRUNK;
+        else if (frunkOpen)  next = LIVE_FRUNK;
+        else if (climateOn)  next = LIVE_HVAC;
+        else if (sentry)     next = LIVE_SENTRY;
+
+        applyLive(next);
+    }
+
+    /** 사람이 읽는 소요시간 ("1시간 5분" / "5분") */
+    private static String durKo(long ms) {
+        long m = ms / 60_000L, h = m / 60;
+        m %= 60;
+        return h > 0 ? (h + "시간 " + m + "분") : (m + "분");
     }
 
     private void handleSoftwareUpdate(JSONObject vs) {
@@ -325,26 +402,6 @@ public class TeslaWatchService extends Service {
             prefs.edit().putString("last_sw", lastKey).apply();
         } else if (!avail) {
             prefs.edit().remove("last_sw").apply();
-        }
-    }
-
-    /** 트렁크/프렁크 열림 감지 (열리면 알림, 닫히면 자동 취소) */
-    private void handleTrunkFrunk(JSONObject vs) {
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        boolean trunkOpen = vs.optInt("rt", 0) != 0;
-        boolean frunkOpen = vs.optInt("ft", 0) != 0;
-        boolean lastTrunk = prefs.getBoolean("trunk_open", false);
-        boolean lastFrunk = prefs.getBoolean("frunk_open", false);
-        if (trunkOpen != lastTrunk) {
-            if (trunkOpen) notifyEvent(NID_TRUNK, "트렁크 열림", "트렁크가 열려 있습니다", R.drawable.ic_stat_trunk);
-            else nm.cancel(NID_TRUNK);
-            prefs.edit().putBoolean("trunk_open", trunkOpen).apply();
-        }
-        if (frunkOpen != lastFrunk) {
-            if (frunkOpen) notifyEvent(NID_FRUNK, "프렁크 열림", "프렁크가 열려 있습니다", R.drawable.ic_stat_frunk);
-            else nm.cancel(NID_FRUNK);
-            prefs.edit().putBoolean("frunk_open", frunkOpen).apply();
         }
     }
 

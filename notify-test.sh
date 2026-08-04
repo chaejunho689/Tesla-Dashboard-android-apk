@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 폰 알림 테스트 메뉴. 폰이 adb로 연결돼 있어야 함(USB 디버깅 or 무선 adb).
-ADB="/c/Users/smile/android-sdk/platform-tools/adb.exe"
+ADB="${ADB:-$(command -v adb || echo /c/Users/smile/android-sdk/platform-tools/adb.exe)}"
 PKG="com.hongcha.tesla"
 RECV="$PKG/.TestReceiver"
 
@@ -17,29 +17,29 @@ while true; do
   echo "===== 테슬라 알림 테스트 ====="
   echo " [이벤트 알림]"
   echo "  1) 신규 소프트웨어"
-  echo "  2) 트렁크 열림"
-  echo "  3) 프렁크 열림"
-  echo "  4) 충전 완료 (시간·요금)"
-  echo " [나우바/상시 알림]"
-  echo "  5) 운전 중"
-  echo "  6) 충전 중 (완충까지 카운트다운)"
-  echo "  7) 에어컨 가동 중"
-  echo "  8) 에어컨 완료"
-  echo "  9) 센트리모드 켜짐"
-  echo " 10) 주차 됨"
+  echo "  2) 충전 완료 (시간·요금)"
+  echo "  3) 주행 종료"
+  echo " [상태 칩 / 나우바]"
+  echo "  4) 운전 중      칩: 02:50 (경과)"
+  echo "  5) 충전 중      칩: 00:45 (남은시간)"
+  echo "  6) 에어컨       칩: 00:50 (경과)"
+  echo "  7) 트렁크       칩: 트렁크"
+  echo "  8) 프렁크       칩: 프렁크"
+  echo "  9) 센트리       칩: 감시중"
+  echo " 10) 칩 끄기"
   echo "  q) 종료"
   read -p "선택: " c
   case "$c" in
     1) send sw ;;
-    2) send trunk ;;
-    3) send frunk ;;
-    4) send chgdone ;;
-    5) send drive ;;
-    6) send charge ;;
-    7) send hvac ;;
-    8) send hvacdone ;;
+    2) send chgdone ;;
+    3) send driveend ;;
+    4) send drive ;;
+    5) send charge ;;
+    6) send hvac ;;
+    7) send trunk ;;
+    8) send frunk ;;
     9) send sentry ;;
-    10) send park ;;
+    10) send off ;;
     q|Q) exit 0 ;;
     *) echo "  ? 없는 번호" ;;
   esac
