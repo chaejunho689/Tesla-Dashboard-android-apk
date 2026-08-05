@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.hongcha.tesla"
-    android:versionCode="33"
-    android:versionName="4.2">
+    android:versionCode="37"
+    android:versionName="4.6">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36"/>
 
@@ -16,6 +16,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <!-- 절전 중에도 상태 폴링·칩 갱신이 멈추지 않도록 배터리 최적화 예외 요청 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <application
         android:label="테슬라 모델3"

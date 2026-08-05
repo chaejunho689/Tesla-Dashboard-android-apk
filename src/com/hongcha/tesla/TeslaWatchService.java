@@ -81,11 +81,13 @@ public class TeslaWatchService extends Service {
             @Override public void run() { checkPending(); }
         }, 5, 10, TimeUnit.SECONDS);
 
-        // 칩의 HH:MM 갱신용 — 네트워크 없이 로컬 시각만으로 1분마다 다시 그린다.
+        // 칩의 MM:SS 갱신용 — 네트워크 없이 로컬 시각만으로 다시 그린다.
+        // 초 단위를 표시하므로 1초 주기. 시간이 없는 상태(감시·트렁크 등)에서는
+        // refreshChip()이 즉시 return 하므로 실제 부하는 없다.
         chipScheduler = Executors.newSingleThreadScheduledExecutor();
         chipScheduler.scheduleWithFixedDelay(new Runnable() {
             @Override public void run() { refreshChip(); }
-        }, 60, 60, TimeUnit.SECONDS);
+        }, 1, 1, TimeUnit.SECONDS);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -106,14 +108,16 @@ public class TeslaWatchService extends Service {
             case "driveend":notifyEvent(NID_DRIVE_END, "주행 종료", "주행 시간 42분",
                                 R.drawable.ic_stat_park); break;
             // 상태 칩 — 실제 상태 진입과 같은 경로(applyLive)를 타게 한다
-            case "drive":   driveStart = t - 170 * 60_000L; applyLive(LIVE_DRIVE); break;   // 02:50 경과
-            case "charge":  chargeEta  = t + 45 * 60_000L;  applyLive(LIVE_CHARGE); break;  // 00:45 남음
-            case "hvac":    hvacStart  = t - 50 * 60_000L;
-                            hvacText   = "에어컨 가동 중";  applyLive(LIVE_HVAC); break;     // 00:50 경과
+            case "drive":   driveStart = t - 12 * 60_000L;  applyLive(LIVE_DRIVE); break;   // 12:00 경과
+            case "charge":  chargeEta  = t + 45 * 60_000L;  applyLive(LIVE_CHARGE); break;  // 45:00 남음
+            case "hvac":    hvacStart  = t - 3 * 60_000L;
+                            hvacText   = "에어컨 가동 중";  applyLive(LIVE_HVAC); break;     // 03:00 경과
             case "trunk":   applyLive(LIVE_TRUNK); break;
             case "frunk":   applyLive(LIVE_FRUNK); break;
             case "sentry":  applyLive(LIVE_SENTRY); break;
             case "off":     applyLive(LIVE_NONE); break;
+            // 대시보드에서 명령이 성공하면 브릿지가 넣어준다 → 즉시 상태 재조회
+            case "refresh": pollOnce(); break;
         }
     }
     @Override public IBinder onBind(Intent intent) { return null; }
@@ -243,7 +247,7 @@ public class TeslaWatchService extends Service {
     private volatile String hvacText = "에어컨 가동 중";
     private boolean wasDriving = false;
 
-    /** 경과/남은 밀리초 → "HH:MM" (칩에 들어갈 짧은 형식) */
+    /** 경과/남은 밀리초 → "HH:MM" (알림 본문용) */
     private static String hhmm(long ms) {
         if (ms < 0) ms = 0;
         long totalMin = ms / 60_000L;
@@ -252,7 +256,17 @@ public class TeslaWatchService extends Service {
         return String.format(java.util.Locale.US, "%02d:%02d", h, m);
     }
 
-    /** 시간이 들어가는 칩(운전·충전·에어컨)을 1분마다 다시 그린다. 네트워크 호출 없음. */
+    /** 경과/남은 밀리초 → "MM:SS" (상태 칩 전용 짧은 형식).
+     *  분은 60을 넘어도 그대로 누적 표시한다(예: 90분 → 90:05). 최대 99:59. */
+    private static String mmss(long ms) {
+        if (ms < 0) ms = 0;
+        long totalSec = ms / 1000L;
+        long m = totalSec / 60, s = totalSec % 60;
+        if (m > 99) { m = 99; s = 59; }
+        return String.format(java.util.Locale.US, "%02d:%02d", m, s);
+    }
+
+    /** 시간이 들어가는 칩(운전·충전·에어컨)을 1초마다 다시 그린다. 네트워크 호출 없음. */
     private void refreshChip() {
         int s = curLive;
         if (s != LIVE_DRIVE && s != LIVE_CHARGE && s != LIVE_HVAC) return;
@@ -267,15 +281,17 @@ public class TeslaWatchService extends Service {
         long now = System.currentTimeMillis();
         switch (state) {
             case LIVE_DRIVE:
+                // 본문 시간은 크로노미터가 알아서 흐른다 → 문구엔 넣지 않는다.
+                // 분·초(MM:SS)는 칩 텍스트에만 쓴다.
                 return buildLive("테슬라", "운전 중", R.drawable.ic_stat_drive,
-                        driveStart, false, hhmm(now - driveStart));
+                        driveStart, false, mmss(now - driveStart));
             case LIVE_CHARGE: {
                 boolean eta = chargeEta > now;
                 return buildLive("테슬라 충전",
                         eta ? "완충까지 " + hhmm(chargeEta - now) : "충전 중",
                         R.drawable.ic_stat_charge,
                         eta ? chargeEta : 0, true,
-                        eta ? hhmm(chargeEta - now) : "충전중");
+                        eta ? mmss(chargeEta - now) : "충전중");
             }
             case LIVE_TRUNK:
                 return buildLive("테슬라", "트렁크 열림", R.drawable.ic_stat_trunk, 0, false, "트렁크");
@@ -283,7 +299,7 @@ public class TeslaWatchService extends Service {
                 return buildLive("테슬라", "프렁크 열림", R.drawable.ic_stat_frunk, 0, false, "프렁크");
             case LIVE_HVAC:
                 return buildLive("테슬라 공조", hvacText, R.drawable.ic_stat_snow,
-                        hvacStart, false, hhmm(now - hvacStart));
+                        hvacStart, false, mmss(now - hvacStart));
             case LIVE_SENTRY:
                 return buildLive("테슬라", "센트리 모드", R.drawable.ic_stat_sentry, 0, false, "감시중");
             default:
@@ -329,15 +345,15 @@ public class TeslaWatchService extends Service {
     private void updateLiveNotification(JSONObject cs, JSONObject cl, JSONObject ds, JSONObject vs) {
         long now = System.currentTimeMillis();
 
-        // 주행 판정: shift_state = D/R/N 이거나 속도>0 이거나 파워!=0
+        // 주행 판정: 기어가 D/R/N 이거나 속도>0 일 때만.
+        // ※ power 는 쓰지 않는다 — 주차 중에도 공조·센트리가 전력을 끌어써서
+        //   |power|>0 이 되므로 주행으로 오판정된다(가짜 "주행 종료" 알림의 원인).
         boolean driving = false;
         if (ds != null) {
             String shift = ds.optString("shift_state", "");
             int speed = ds.optInt("speed", -1);
-            int power = ds.optInt("power", 0);
             if (shift.equals("D") || shift.equals("R") || shift.equals("N")) driving = true;
             else if (speed > 0) driving = true;
-            else if (Math.abs(power) > 1) driving = true;   // 회생/추진 중
         }
 
         boolean charging = cs != null && "Charging".equals(cs.optString("charging_state", ""));
@@ -359,12 +375,14 @@ public class TeslaWatchService extends Service {
         chargeEta = (charging && minLeft > 0) ? now + minLeft * 60_000L : 0;
         hvacText  = climateReached ? "에어컨 완료" : "에어컨 가동 중";
 
-        // 주행 종료 → 칩은 내려가고 일반 알림 1회
+        // 주행 종료 → 칩은 내려가고 일반 알림 1회.
+        // 2분 미만은 오판정으로 보고 알리지 않는다(순간적인 기어 변경 등).
         if (wasDriving && !driving) {
             long ms = driveStart > 0 ? (now - driveStart) : 0;
-            notifyEvent(NID_DRIVE_END, "주행 종료",
-                    ms > 0 ? ("주행 시간 " + durKo(ms)) : "주행이 종료되었습니다",
-                    R.drawable.ic_stat_park);
+            if (ms >= 2 * 60_000L) {
+                notifyEvent(NID_DRIVE_END, "주행 종료",
+                        "주행 시간 " + durKo(ms), R.drawable.ic_stat_park);
+            }
         }
         wasDriving = driving;
 

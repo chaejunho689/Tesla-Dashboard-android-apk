@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
                         != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 42);
         }
+        askIgnoreBatteryOptimizations();
         TeslaWatchService.start(this);
 
         web = new WebView(this);
@@ -189,5 +190,19 @@ public class MainActivity extends Activity {
             return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    /** 배터리 최적화 예외 요청(1회). 예외가 없으면 절전 상태에서 폴링·칩 갱신이 멈춘다. */
+    private void askIgnoreBatteryOptimizations() {
+        if (android.os.Build.VERSION.SDK_INT < 23) return;
+        try {
+            android.os.PowerManager pm =
+                    (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
+            android.content.Intent it = new android.content.Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(it);
+        } catch (Exception ignore) { /* 기기에 해당 화면이 없으면 무시 */ }
     }
 }
